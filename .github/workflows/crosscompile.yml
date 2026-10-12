@@ -3,11 +3,11 @@
 name: Cross Compile
 
 on:
+  workflow_dispatch:
   push:
     branches: [ "master" ]
   pull_request:
     branches: [ "master" ]
-
 jobs:
   zig-build:
     runs-on: ubuntu-latest
