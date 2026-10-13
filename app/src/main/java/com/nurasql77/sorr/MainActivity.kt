@@ -1,7 +1,6 @@
 package com.nurasql77.sorr
 
 import android.Manifest
-import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -42,6 +41,7 @@ class MainActivity : ComponentActivity() {
         private const val PREFS = "sorr"
         private const val KEY_PATH = "sorr_path"
         private const val KEY_GUEST_IP = "guest_ip"
+        private const val KEY_P2_PORT = "p2_port"
         private const val CORE_NAME = "libbennugd_libretro.so"
     }
 
@@ -51,6 +51,7 @@ class MainActivity : ComponentActivity() {
     private var controlsLayer: ControlsLayer? = null
     private var hostServer: HostServer? = null
     private var guestClient: GuestClient? = null
+    private var discovery: DiscoveryListener? = null
 
     // Ойын кезінде перне оқиғалары осында барады (Solo/Host: core-ға, Guest: желі арқылы Host-қа)
     private var keySink: ((Int, Int) -> Unit)? = null
@@ -108,6 +109,8 @@ class MainActivity : ComponentActivity() {
         hostServer = null
         guestClient?.stop()
         guestClient = null
+        discovery?.stop()
+        discovery = null
     }
 
     // ---------- Мәзір ----------
@@ -145,6 +148,8 @@ class MainActivity : ComponentActivity() {
         }
         root.addView(info)
 
+        val p2Port = prefs.getInt(KEY_P2_PORT, 1)
+
         if (savedPath != null) {
             root.addView(Button(this).apply {
                 text = "Ойынды бастау"
@@ -154,11 +159,18 @@ class MainActivity : ComponentActivity() {
                 text = "LAN: ойынды ашу (Host, 1-ойыншы)"
                 setOnClickListener { startGame(true) }
             })
+            root.addView(Button(this).apply {
+                text = "2-ойыншы порты: $p2Port (ауыстыру)"
+                setOnClickListener {
+                    prefs.edit().putInt(KEY_P2_PORT, if (p2Port >= 3) 1 else p2Port + 1).apply()
+                    showMenu()
+                }
+            })
         }
 
         root.addView(Button(this).apply {
             text = "LAN: қосылу (Guest, 2-ойыншы)"
-            setOnClickListener { askHostIp() }
+            setOnClickListener { showGuestMenu() }
         })
 
         root.addView(Button(this).apply {
@@ -275,7 +287,7 @@ class MainActivity : ComponentActivity() {
             enterImmersiveMode()
 
             if (asHost) {
-                val server = HostServer(this, view) { toast(it) }
+                val server = HostServer(this, view, prefs.getInt(KEY_P2_PORT, 1)) { toast(it) }
                 server.start()
                 hostServer = server
                 toast("LAN Host: екінші телефон мына IP-ге қосылсын: ${Net.localIp() ?: "белгісіз"}")
@@ -288,32 +300,97 @@ class MainActivity : ComponentActivity() {
 
     // ---------- Guest (2-ойыншы) ----------
 
-    private fun askHostIp() {
-        val input = EditText(this).apply {
+    // Host-ты автоматты іздейтін мәзір (қолмен IP енгізуге де болады)
+    private fun showGuestMenu() {
+        stopNetwork()
+        keySink = null
+
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            setBackgroundColor(Color.BLACK)
+            setPadding(48, 48, 48, 48)
+        }
+
+        root.addView(TextView(this).apply {
+            text = "LAN: Host іздеу"
+            textSize = 22f
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+        })
+
+        root.addView(TextView(this).apply {
+            text = "Host телефонда \"LAN: ойынды ашу\" басылған болуы керек.\nЕкі телефон бір Wi-Fi желісінде болсын."
+            textSize = 13f
+            setTextColor(Color.LTGRAY)
+            gravity = Gravity.CENTER
+            setPadding(0, 16, 0, 16)
+        })
+
+        val hostsBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val searching = TextView(this).apply {
+            text = "Іздеу..."
+            setTextColor(Color.GRAY)
+            gravity = Gravity.CENTER
+        }
+        hostsBox.addView(searching)
+        root.addView(hostsBox)
+
+        val shown = mutableSetOf<String>()
+        val listener = DiscoveryListener(this) { ip, name ->
+            if (shown.add(ip)) {
+                searching.text = "Табылған телефондар:"
+                hostsBox.addView(Button(this).apply {
+                    text = "$name  ($ip)"
+                    setOnClickListener { startGuest(ip) }
+                })
+            }
+        }
+        discovery = listener
+        listener.start()
+
+        // Қолмен IP
+        val ipInput = EditText(this).apply {
             inputType = InputType.TYPE_CLASS_TEXT
-            hint = "мысалы 192.168.1.5"
+            hint = "немесе IP қолмен: 192.168.1.5"
+            setHintTextColor(Color.GRAY)
+            setTextColor(Color.WHITE)
             setText(prefs.getString(KEY_GUEST_IP, ""))
         }
-        AlertDialog.Builder(this)
-            .setTitle("Host телефонның IP-і")
-            .setView(input)
-            .setPositiveButton("Қосылу") { _, _ ->
-                val ip = input.text.toString().trim()
-                if (ip.isEmpty()) {
-                    toast("IP енгізіңіз")
-                } else {
-                    prefs.edit().putString(KEY_GUEST_IP, ip).apply()
-                    startGuest(ip)
-                }
+        root.addView(ipInput)
+
+        root.addView(Button(this).apply {
+            text = "Осы IP-ге қосылу"
+            setOnClickListener {
+                val ip = ipInput.text.toString().trim()
+                if (ip.isEmpty()) toast("IP енгізіңіз") else startGuest(ip)
             }
-            .setNegativeButton("Болдырмау", null)
-            .show()
+        })
+
+        root.addView(Button(this).apply {
+            text = "Артқа"
+            setOnClickListener { showMenu() }
+        })
+
+        setContentView(root)
     }
 
     private fun startGuest(ip: String) {
+        discovery?.stop()
+        discovery = null
+        prefs.edit().putString(KEY_GUEST_IP, ip).apply()
+
         val image = ImageView(this).apply {
             setBackgroundColor(Color.BLACK)
             scaleType = ImageView.ScaleType.FIT_CENTER
+        }
+        val stats = TextView(this).apply {
+            setTextColor(Color.WHITE)
+            textSize = 12f
+            alpha = 0.7f
+            setBackgroundColor(0x66000000)
+            setPadding(16, 4, 16, 4)
+            text = "Қосылуда..."
         }
 
         val client = GuestClient(
@@ -321,6 +398,13 @@ class MainActivity : ComponentActivity() {
             activity = this,
             onFrame = { bmp -> image.setImageBitmap(bmp) },
             onStatus = { toast(it) },
+            onStats = { ping, fps, noVideo ->
+                stats.text = if (noVideo) {
+                    "Видео келмей тұр..."
+                } else {
+                    "Ping " + (if (ping >= 0) "$ping мс" else "-") + "  •  $fps к/с"
+                }
+            },
             onClosed = { showMenu() }
         )
         guestClient = client
@@ -340,6 +424,15 @@ class MainActivity : ComponentActivity() {
         val layer = ControlsLayer(this, prefs, sink)
         layer.addTo(container)
         controlsLayer = layer
+
+        container.addView(
+            stats,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+            ).apply { bottomMargin = 8 }
+        )
 
         setContentView(container)
         enterImmersiveMode()
