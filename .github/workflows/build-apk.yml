@@ -10,19 +10,87 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ---------- 1. Core (.so), тек ARM64 ----------
+      - name: Build core (arm64-v8a)
+        run: |
+          cmake -B build-core \
+            -DCMAKE_TOOLCHAIN_FILE="${ANDROID_NDK_ROOT}/build/cmake/android.toolchain.cmake" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DANDROID_PLATFORM=24 \
+            -DANDROID_ABI=arm64-v8a \
+            -DCMAKE_WARN_DEPRECATED=false \
+            -S .
+          cmake --build build-core
+
+      - name: Put core into the app
+        run: |
+          SO=$(find build-core -maxdepth 2 -name 'bennugd_libretro*.so' | head -n 1)
+          if [ -z "$SO" ]; then
+            echo "::error::bennugd_libretro .so not found in build-core/"
+            ls -R build-core | head -n 80
+            exit 1
+          fi
+          mkdir -p app/src/main/jniLibs/arm64-v8a
+          cp "$SO" app/src/main/jniLibs/arm64-v8a/libbennugd_libretro.so
+          "$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" --strip-unneeded app/src/main/jniLibs/arm64-v8a/libbennugd_libretro.so
+          rm -f app/src/main/assets/bennugd_libretro.so
+          file app/src/main/jniLibs/arm64-v8a/libbennugd_libretro.so
+          ls -l app/src/main/jniLibs/arm64-v8a
+
+      # ---------- 2. Қол қою ----------
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
 
+      - name: Decode keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "::error::Secret KEYSTORE_B64 is empty"
+            exit 1
+          fi
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          echo "KEYSTORE_FILE=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+
+      - name: Detect key alias and certificate hash
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          ALIAS=$(keytool -list -keystore "$KEYSTORE_FILE" -storepass "$KEYSTORE_PASSWORD" 2>/dev/null \
+            | grep PrivateKeyEntry | head -n 1 | cut -d, -f1)
+          if [ -z "$ALIAS" ]; then
+            echo "::error::No private key found in keystore (wrong password or file?)"
+            exit 1
+          fi
+          CERT_SHA256=$(keytool -exportcert -alias "$ALIAS" -keystore "$KEYSTORE_FILE" \
+            -storepass "$KEYSTORE_PASSWORD" | sha256sum | cut -d' ' -f1)
+          echo "Key alias: $ALIAS"
+          echo "Certificate SHA-256: $CERT_SHA256"
+          echo "KEY_ALIAS=$ALIAS" >> "$GITHUB_ENV"
+          echo "CERT_SHA256=$CERT_SHA256" >> "$GITHUB_ENV"
+
+      - name: Patch signature guard into the core
+        run: |
+          python3 tools/patch_guard.py app/src/main/jniLibs/arm64-v8a/libbennugd_libretro.so "$CERT_SHA256"
+
+      # ---------- 3. APK ----------
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.7
 
-      - name: Build debug APK
-        run: gradle assembleDebug --stacktrace
+      - name: Build signed release APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD || secrets.KEYSTORE_PASSWORD }}
+        run: gradle assembleRelease --stacktrace
 
       - uses: actions/upload-artifact@v4
         with:
-          name: SoRR-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          name: SoRR-release-apk
+          path: app/build/outputs/apk/release/*.apk
+
+      - name: Remove keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.keystore"
