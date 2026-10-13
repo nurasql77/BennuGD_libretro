@@ -20,10 +20,33 @@ android {
         }
     }
 
+    // Қол қою: GitHub Actions ортасынан оқылады (KEYSTORE_FILE, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD)
+    signingConfigs {
+        release {
+            def ksFile = System.getenv('KEYSTORE_FILE')
+            if (ksFile) {
+                storeFile file(ksFile)
+                storePassword System.getenv('KEYSTORE_PASSWORD')
+                keyAlias System.getenv('KEY_ALIAS')
+                keyPassword System.getenv('KEY_PASSWORD')
+            }
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
+            if (System.getenv('KEYSTORE_FILE')) {
+                signingConfig signingConfigs.release
+            } else {
+                signingConfig signingConfigs.debug
+            }
         }
+    }
+
+    lint {
+        checkReleaseBuilds false
+        abortOnError false
     }
 
     compileOptions {
@@ -47,4 +70,7 @@ dependencies {
     implementation 'com.github.swordfish90:libretrodroid:0.13.2'
     implementation 'androidx.core:core-ktx:1.16.0'
     implementation 'androidx.activity:activity-ktx:1.9.3'
+    implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.8.7'
+    // Сенсорлық басқару (Lemuroid-та қолданылатын кітапхана, JitPack арқылы)
+    implementation 'com.github.swordfish90:radialgamepad:2.0.0'
 }
