@@ -2,7 +2,9 @@ package com.nurasql77.sorr
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.KeyEvent
@@ -110,17 +112,16 @@ class ControlsLayer(
     // ---------- Құру ----------
 
     fun addTo(container: FrameLayout) {
-        val left = createGroup("left", "Сол жақ: D-pad", 0.17f, 0.72f, 1f, buildLeftConfig())
-        val right = createGroup("right", "Оң жақ: A B X Y", 0.83f, 0.72f, 1f, buildRightConfig())
-        val l1 = createGroup("l1", "L1", 0.12f, 0.15f, 0.3f, buildSingleConfig(KeyEvent.KEYCODE_BUTTON_L1, "L1"))
-        val l2 = createGroup("l2", "L2", 0.24f, 0.15f, 0.3f, buildSingleConfig(KeyEvent.KEYCODE_BUTTON_L2, "L2"))
-        val r2 = createGroup("r2", "R2", 0.76f, 0.15f, 0.3f, buildSingleConfig(KeyEvent.KEYCODE_BUTTON_R2, "R2"))
-        val r1 = createGroup("r1", "R1", 0.88f, 0.15f, 0.3f, buildSingleConfig(KeyEvent.KEYCODE_BUTTON_R1, "R1"))
+        val left = createPadGroup("left", "Сол жақ: D-pad", 0.17f, 0.72f, 1f, buildLeftConfig())
+        val right = createPadGroup("right", "Оң жақ: A B X Y", 0.83f, 0.72f, 1f, buildRightConfig())
+        val l1 = createGroup("l1", "L1", 0.12f, 0.15f, 0.2f, SingleButtonView(activity, "L1", KeyEvent.KEYCODE_BUTTON_L1, sink))
+        val l2 = createGroup("l2", "L2", 0.24f, 0.15f, 0.2f, SingleButtonView(activity, "L2", KeyEvent.KEYCODE_BUTTON_L2, sink))
+        val r2 = createGroup("r2", "R2", 0.76f, 0.15f, 0.2f, SingleButtonView(activity, "R2", KeyEvent.KEYCODE_BUTTON_R2, sink))
+        val r1 = createGroup("r1", "R1", 0.88f, 0.15f, 0.2f, SingleButtonView(activity, "R1", KeyEvent.KEYCODE_BUTTON_R1, sink))
 
         for (g in listOf(left, right, l1, l2, r2, r1)) {
             container.addView(g.holder)
             applyLayout(g)
-            watchEvents(g)
         }
 
         buildPanel()
@@ -167,18 +168,16 @@ class ControlsLayer(
         cx: Float,
         cy: Float,
         scale: Float,
-        config: RadialGamePadConfig
+        content: View
     ): Group {
-        val pad = RadialGamePad(config, 8f, activity)
         val holder = DraggableFrame(activity)
         holder.addView(
-            pad,
+            content,
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
         )
-        padViews[key] = pad
 
         val g = Group(key, title, cx, cy, scale, holder)
         load(g)
@@ -194,10 +193,21 @@ class ControlsLayer(
         return g
     }
 
-    private val padViews = mutableMapOf<String, RadialGamePad>()
+    // RadialGamePad блогы (D-pad, A/B/X/Y)
+    private fun createPadGroup(
+        key: String,
+        title: String,
+        cx: Float,
+        cy: Float,
+        scale: Float,
+        config: RadialGamePadConfig
+    ): Group {
+        val pad = RadialGamePad(config, 8f, activity)
+        watchEvents(pad)
+        return createGroup(key, title, cx, cy, scale, pad)
+    }
 
-    private fun watchEvents(g: Group) {
-        val pad = padViews[g.key] ?: return
+    private fun watchEvents(pad: RadialGamePad) {
         activity.lifecycleScope.launch {
             pad.events()
                 .flowWithLifecycle(activity.lifecycle, Lifecycle.State.RESUMED)
@@ -424,15 +434,6 @@ class ControlsLayer(
         )
     )
 
-    // Жеке бір түйме (L1, L2, R1, R2)
-    private fun buildSingleConfig(keyCode: Int, label: String) = RadialGamePadConfig(
-        sockets = 6,
-        primaryDial = PrimaryDialConfig.PrimaryButtons(
-            listOf(ButtonConfig(id = keyCode, label = label))
-        ),
-        secondaryDials = emptyList()
-    )
-
     // ---------- Оқиғалар ----------
 
     private fun handleEvent(event: Event) {
@@ -462,5 +463,69 @@ class ControlsLayer(
                 heldDpad.add(key)
             }
         }
+    }
+}
+
+
+/** Жеке бір дөңгелек түйме (L1, L2, R1, R2). */
+class SingleButtonView(
+    context: Context,
+    private val label: String,
+    private val keyCode: Int,
+    private val sink: (action: Int, keyCode: Int) -> Unit
+) : View(context) {
+
+    private var down = false
+
+    private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = Color.WHITE
+    }
+    private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = Color.WHITE
+    }
+    private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        textAlign = Paint.Align.CENTER
+        isFakeBoldText = true
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        val cx = width / 2f
+        val cy = height / 2f
+        val r = minOf(width, height) / 2f * 0.85f
+
+        fill.alpha = if (down) 150 else 60
+        canvas.drawCircle(cx, cy, r, fill)
+
+        ring.strokeWidth = r * 0.06f
+        ring.alpha = 140
+        canvas.drawCircle(cx, cy, r, ring)
+
+        text.textSize = r * 0.75f
+        text.alpha = 230
+        canvas.drawText(label, cx, cy + text.textSize * 0.35f, text)
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> setDown(true)
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> setDown(false)
+        }
+        return true
+    }
+
+    override fun onDetachedFromWindow() {
+        setDown(false)
+        super.onDetachedFromWindow()
+    }
+
+    private fun setDown(value: Boolean) {
+        if (value == down) return
+        down = value
+        if (value) performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
+        sink(if (value) KeyEvent.ACTION_DOWN else KeyEvent.ACTION_UP, keyCode)
+        invalidate()
     }
 }
