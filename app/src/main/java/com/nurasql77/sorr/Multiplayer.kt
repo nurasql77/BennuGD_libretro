@@ -95,9 +95,11 @@ object Net {
 class HostServer(
     private val activity: Activity,
     private val game: GLRetroView,
-    private val guestPort: Int,
     private val onStatus: (String) -> Unit
 ) {
+    // Libretro-да 2-ойыншы порты әрқашан 1
+    private val PLAYER2_PORT = 1
+
     @Volatile private var running = false
     private var server: ServerSocket? = null
     private var pixelThread: HandlerThread? = null
@@ -112,7 +114,7 @@ class HostServer(
             var sock: DatagramSocket? = null
             try {
                 sock = DatagramSocket().apply { broadcast = true }
-                val payload = "SORR1|${Build.MODEL}|${Net.PORT}".toByteArray()
+                val payload = "SORR1|\( {Build.MODEL}| \){Net.PORT}".toByteArray()
                 while (running) {
                     for (addr in Net.broadcastAddresses()) {
                         try {
@@ -171,7 +173,8 @@ class HostServer(
         try { clientSocket?.close() } catch (e: Exception) { }
         clientSocket = sock
         sock.tcpNoDelay = true
-        status("2-ойыншы қосылды (порт $guestPort)")
+        sock.soTimeout = 0
+        status("2-ойыншы қосылды (порт $PLAYER2_PORT)")
 
         val alive = AtomicBoolean(true)
         val held = mutableSetOf<Int>()
@@ -190,8 +193,17 @@ class HostServer(
                     Net.MSG_INPUT -> {
                         val action = input.readUnsignedByte()
                         val keyCode = input.readInt()
-                        if (action == KeyEvent.ACTION_DOWN) held.add(keyCode) else held.remove(keyCode)
-                        activity.runOnUiThread { game.sendKeyEvent(action, keyCode, guestPort) }
+
+                        if (action == KeyEvent.ACTION_DOWN) {
+                            held.add(keyCode)
+                        } else {
+                            held.remove(keyCode)
+                        }
+
+                        // Нақты 2-ойыншы портына жібереміз
+                        activity.runOnUiThread {
+                            game.sendKeyEvent(action, keyCode, PLAYER2_PORT)
+                        }
                     }
                     Net.MSG_PING -> {
                         val ts = input.readLong()
@@ -211,7 +223,9 @@ class HostServer(
             // Ұсталып қалған түймелерді босатамыз
             val toRelease = held.toList()
             activity.runOnUiThread {
-                for (k in toRelease) game.sendKeyEvent(KeyEvent.ACTION_UP, k, guestPort)
+                for (k in toRelease) {
+                    game.sendKeyEvent(KeyEvent.ACTION_UP, k, PLAYER2_PORT)
+                }
             }
             try { sock.close() } catch (e: Exception) { }
             if (running) status("2-ойыншы ажыратылды")
@@ -263,7 +277,6 @@ class HostServer(
                         }
                         val sendMs = SystemClock.elapsedRealtime() - tw
 
-                        // Желі баяу болса сапаны түсіреміз, жақсы болса көтереміз
                         quality = when {
                             sendMs > 40 -> (quality - 5).coerceAtLeast(Net.QUALITY_MIN)
                             sendMs < 12 -> (quality + 2).coerceAtMost(Net.QUALITY_MAX)
@@ -306,7 +319,7 @@ class DiscoveryListener(
                 acquire()
             }
         } catch (e: Exception) {
-            // lock алынбады, broadcast бәрібір жұмыс істеуі мүмкін
+            // lock алынбады
         }
 
         Thread {
@@ -422,7 +435,6 @@ class GuestClient(
         }
     }
 
-    // Әр секунд сайын ping жібереді және статистика көрсетеді
     private fun startStatsLoop() {
         Thread {
             try {
