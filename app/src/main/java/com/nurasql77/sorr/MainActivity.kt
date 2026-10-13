@@ -12,9 +12,13 @@ import android.os.Environment
 import android.provider.DocumentsContract
 import android.provider.Settings
 import android.view.Gravity
+import android.view.InputDevice
 import android.view.KeyEvent
+import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.Button
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
@@ -38,6 +42,7 @@ class MainActivity : ComponentActivity() {
 
     private val prefs by lazy { getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
     private var retroView: GLRetroView? = null
+    private var controls: TouchControlsView? = null
     private var waitingForStorageAccess = false
 
     // SoRR папкасын таңдау
@@ -84,6 +89,7 @@ class MainActivity : ComponentActivity() {
 
     private fun showMenu() {
         retroView = null
+        controls = null
         val savedPath = prefs.getString(KEY_PATH, null)
 
         val root = LinearLayout(this).apply {
@@ -207,7 +213,32 @@ class MainActivity : ComponentActivity() {
             val view = GLRetroView(this, data)
             lifecycle.addObserver(view)
             retroView = view
-            setContentView(view)
+
+            // Сенсорлық басқару: экрандағы түймелер ойын экранының үстінде тұрады
+            val touch = TouchControlsView(this) { keyCode, down ->
+                view.sendKeyEvent(
+                    if (down) KeyEvent.ACTION_DOWN else KeyEvent.ACTION_UP,
+                    keyCode
+                )
+            }
+            controls = touch
+
+            val container = FrameLayout(this)
+            container.addView(
+                view,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+            )
+            container.addView(
+                touch,
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+            )
+            setContentView(container)
             enterImmersiveMode()
         } catch (e: Throwable) {
             toast("Қате: ${e.message}")
@@ -238,6 +269,11 @@ class MainActivity : ComponentActivity() {
             event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN
         ) {
             return super.dispatchKeyEvent(event)
+        }
+
+        // Нақты геймпад қосылса, экрандағы түймелерді жасырамыз
+        if ((event.source and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD) {
+            controls?.visibility = View.GONE
         }
 
         view.sendKeyEvent(event.action, event.keyCode)
