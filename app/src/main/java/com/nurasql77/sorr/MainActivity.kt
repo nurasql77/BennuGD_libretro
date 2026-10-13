@@ -15,7 +15,6 @@ import android.system.Os
 import android.view.Gravity
 import android.view.InputDevice
 import android.view.KeyEvent
-import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.Button
@@ -29,19 +28,8 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.flowWithLifecycle
-import androidx.lifecycle.lifecycleScope
 import com.swordfish.libretrodroid.GLRetroView
 import com.swordfish.libretrodroid.GLRetroViewData
-import com.swordfish.radialgamepad.library.RadialGamePad
-import com.swordfish.radialgamepad.library.config.ButtonConfig
-import com.swordfish.radialgamepad.library.config.CrossConfig
-import com.swordfish.radialgamepad.library.config.PrimaryDialConfig
-import com.swordfish.radialgamepad.library.config.RadialGamePadConfig
-import com.swordfish.radialgamepad.library.config.SecondaryDialConfig
-import com.swordfish.radialgamepad.library.event.Event
-import kotlinx.coroutines.launch
 import java.io.File
 
 class MainActivity : ComponentActivity() {
@@ -50,13 +38,11 @@ class MainActivity : ComponentActivity() {
         private const val PREFS = "sorr"
         private const val KEY_PATH = "sorr_path"
         private const val CORE_NAME = "libbennugd_libretro.so"
-        private const val ID_DPAD = 0
     }
 
     private val prefs by lazy { getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
     private var retroView: GLRetroView? = null
-    private var pads: List<View> = emptyList()
-    private val heldDpad = mutableSetOf<Int>()
+    private var controlsLayer: ControlsLayer? = null
     private var waitingForStorageAccess = false
 
     // SoRR папкасын таңдау
@@ -103,8 +89,7 @@ class MainActivity : ComponentActivity() {
 
     private fun showMenu() {
         retroView = null
-        pads = emptyList()
-        heldDpad.clear()
+        controlsLayer = null
         val savedPath = prefs.getString(KEY_PATH, null)
 
         val root = LinearLayout(this).apply {
@@ -240,7 +225,12 @@ class MainActivity : ComponentActivity() {
                     ViewGroup.LayoutParams.MATCH_PARENT
                 )
             )
-            addTouchPads(container, view)
+
+            // Сенсорлық басқару (орны, өлшемі, мөлдірлігі өзгертіледі және сақталады)
+            val layer = ControlsLayer(this, view, prefs)
+            layer.addTo(container)
+            controlsLayer = layer
+
             setContentView(container)
             enterImmersiveMode()
         } catch (e: Throwable) {
@@ -262,9 +252,11 @@ class MainActivity : ComponentActivity() {
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val view = retroView ?: return super.dispatchKeyEvent(event)
 
-        // Артқа түймесі: ойыннан шығу
+        // Артқа түймесі: алдымен басқаруды өзгерту режимін жабады, әйтпесе ойыннан шығады
         if (event.keyCode == KeyEvent.KEYCODE_BACK) {
-            if (event.action == KeyEvent.ACTION_UP) finish()
+            if (event.action == KeyEvent.ACTION_UP) {
+                if (controlsLayer?.handleBack() != true) finish()
+            }
             return true
         }
         // Дыбыс түймелерін жүйеге қалдырамыз
@@ -276,115 +268,11 @@ class MainActivity : ComponentActivity() {
 
         // Нақты геймпад қосылса, экрандағы түймелерді жасырамыз
         if ((event.source and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD) {
-            pads.forEach { it.visibility = View.GONE }
+            controlsLayer?.onPhysicalGamepad()
         }
 
         view.sendKeyEvent(event.action, event.keyCode)
         return true
-    }
-
-    // ---------- Сенсорлық басқару (RadialGamePad) ----------
-
-    private fun addTouchPads(container: FrameLayout, game: GLRetroView) {
-        val dm = resources.displayMetrics
-        val size = minOf(dm.heightPixels * 0.62f, dm.widthPixels * 0.42f).toInt()
-
-        val leftPad = RadialGamePad(buildLeftConfig(), 8f, this)
-        val rightPad = RadialGamePad(buildRightConfig(), 8f, this)
-
-        container.addView(
-            leftPad,
-            FrameLayout.LayoutParams(size, size, Gravity.BOTTOM or Gravity.START)
-        )
-        container.addView(
-            rightPad,
-            FrameLayout.LayoutParams(size, size, Gravity.BOTTOM or Gravity.END)
-        )
-        pads = listOf(leftPad, rightPad)
-
-        for (pad in listOf(leftPad, rightPad)) {
-            lifecycleScope.launch {
-                pad.events()
-                    .flowWithLifecycle(lifecycle, Lifecycle.State.RESUMED)
-                    .collect { handlePadEvent(game, it) }
-            }
-        }
-    }
-
-    // Сол жақ: D-pad (диагональмен) + SELECT
-    private fun buildLeftConfig() = RadialGamePadConfig(
-        sockets = 6,
-        primaryDial = PrimaryDialConfig.Cross(
-            CrossConfig(
-                id = ID_DPAD,
-                useDiagonals = true
-            )
-        ),
-        secondaryDials = listOf(
-            SecondaryDialConfig.SingleButton(
-                index = 1,
-                scale = 1f,
-                distance = 0f,
-                ButtonConfig(
-                    id = KeyEvent.KEYCODE_BUTTON_SELECT,
-                    label = "SELECT"
-                )
-            )
-        )
-    )
-
-    // Оң жақ: A, B, X, Y + START
-    private fun buildRightConfig() = RadialGamePadConfig(
-        sockets = 6,
-        primaryDial = PrimaryDialConfig.PrimaryButtons(
-            listOf(
-                ButtonConfig(id = KeyEvent.KEYCODE_BUTTON_A, label = "A"),
-                ButtonConfig(id = KeyEvent.KEYCODE_BUTTON_B, label = "B"),
-                ButtonConfig(id = KeyEvent.KEYCODE_BUTTON_X, label = "X"),
-                ButtonConfig(id = KeyEvent.KEYCODE_BUTTON_Y, label = "Y")
-            )
-        ),
-        secondaryDials = listOf(
-            SecondaryDialConfig.SingleButton(
-                index = 2,
-                scale = 1f,
-                distance = 0f,
-                ButtonConfig(
-                    id = KeyEvent.KEYCODE_BUTTON_START,
-                    label = "START"
-                )
-            )
-        )
-    )
-
-    private fun handlePadEvent(game: GLRetroView, event: Event) {
-        when (event) {
-            is Event.Button -> game.sendKeyEvent(event.action, event.id)
-            is Event.Direction -> if (event.id == ID_DPAD) updateDpad(game, event.xAxis, event.yAxis)
-            else -> Unit
-        }
-    }
-
-    // D-pad бағытын (x, y) төрт бағыттық пернеге айналдыру
-    private fun updateDpad(game: GLRetroView, x: Float, y: Float) {
-        val wanted = mutableSetOf<Int>()
-        if (x < -0.4f) wanted.add(KeyEvent.KEYCODE_DPAD_LEFT)
-        if (x > 0.4f) wanted.add(KeyEvent.KEYCODE_DPAD_RIGHT)
-        if (y < -0.4f) wanted.add(KeyEvent.KEYCODE_DPAD_UP)
-        if (y > 0.4f) wanted.add(KeyEvent.KEYCODE_DPAD_DOWN)
-
-        for (key in heldDpad.toList()) {
-            if (key !in wanted) {
-                game.sendKeyEvent(KeyEvent.ACTION_UP, key)
-                heldDpad.remove(key)
-            }
-        }
-        for (key in wanted) {
-            if (key !in heldDpad) {
-                game.sendKeyEvent(KeyEvent.ACTION_DOWN, key)
-                heldDpad.add(key)
-            }
-        }
     }
 
     // ---------- Көмекші ----------
