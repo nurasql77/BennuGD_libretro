@@ -18,7 +18,6 @@ import androidx.activity.ComponentActivity
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.flowWithLifecycle
 import androidx.lifecycle.lifecycleScope
-import com.swordfish.libretrodroid.GLRetroView
 import com.swordfish.radialgamepad.library.RadialGamePad
 import com.swordfish.radialgamepad.library.config.ButtonConfig
 import com.swordfish.radialgamepad.library.config.CrossConfig
@@ -66,12 +65,12 @@ class DraggableFrame(context: Context) : FrameLayout(context) {
  */
 class ControlsLayer(
     private val activity: ComponentActivity,
-    private val game: GLRetroView,
-    private val prefs: SharedPreferences
+    private val prefs: SharedPreferences,
+    private val sink: (action: Int, keyCode: Int) -> Unit
 ) {
     companion object {
         private const val ID_DPAD = 0
-        private const val MIN_SCALE = 0.4f
+        private const val MIN_SCALE = 0.15f
         private const val MAX_SCALE = 2.0f
         private const val MIN_ALPHA = 0.2f
     }
@@ -113,9 +112,12 @@ class ControlsLayer(
     fun addTo(container: FrameLayout) {
         val left = createGroup("left", "Сол жақ: D-pad", 0.17f, 0.72f, 1f, buildLeftConfig())
         val right = createGroup("right", "Оң жақ: A B X Y", 0.83f, 0.72f, 1f, buildRightConfig())
-        val extra = createGroup("extra", "Қосымша: L1 R1 L2", 0.83f, 0.22f, 0.55f, buildExtraConfig())
+        val l1 = createGroup("l1", "L1", 0.12f, 0.15f, 0.3f, buildSingleConfig(KeyEvent.KEYCODE_BUTTON_L1, "L1"))
+        val l2 = createGroup("l2", "L2", 0.24f, 0.15f, 0.3f, buildSingleConfig(KeyEvent.KEYCODE_BUTTON_L2, "L2"))
+        val r2 = createGroup("r2", "R2", 0.76f, 0.15f, 0.3f, buildSingleConfig(KeyEvent.KEYCODE_BUTTON_R2, "R2"))
+        val r1 = createGroup("r1", "R1", 0.88f, 0.15f, 0.3f, buildSingleConfig(KeyEvent.KEYCODE_BUTTON_R1, "R1"))
 
-        for (g in listOf(left, right, extra)) {
+        for (g in listOf(left, right, l1, l2, r2, r1)) {
             container.addView(g.holder)
             applyLayout(g)
             watchEvents(g)
@@ -125,7 +127,7 @@ class ControlsLayer(
         container.addView(
             panel,
             FrameLayout.LayoutParams(
-                (screenW * 0.55f).toInt(),
+                (screenW * 0.40f).toInt(),
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.TOP or Gravity.CENTER_HORIZONTAL
             ).apply { topMargin = dp(8) }
@@ -206,7 +208,7 @@ class ControlsLayer(
     // ---------- Орналастыру және сақтау ----------
 
     private fun applyLayout(g: Group) {
-        val size = (baseSize() * g.scale).toInt().coerceAtLeast(dp(60))
+        val size = (baseSize() * g.scale).toInt().coerceAtLeast(dp(56))
         val lp = FrameLayout.LayoutParams(size, size, Gravity.TOP or Gravity.START)
         lp.leftMargin = (g.cx * screenW - size / 2f).toInt()
         lp.topMargin = (g.cy * screenH - size / 2f).toInt()
@@ -422,15 +424,11 @@ class ControlsLayer(
         )
     )
 
-    // Қосымша: L1, R1, L2
-    private fun buildExtraConfig() = RadialGamePadConfig(
+    // Жеке бір түйме (L1, L2, R1, R2)
+    private fun buildSingleConfig(keyCode: Int, label: String) = RadialGamePadConfig(
         sockets = 6,
         primaryDial = PrimaryDialConfig.PrimaryButtons(
-            listOf(
-                ButtonConfig(id = KeyEvent.KEYCODE_BUTTON_L1, label = "L1"),
-                ButtonConfig(id = KeyEvent.KEYCODE_BUTTON_R1, label = "R1"),
-                ButtonConfig(id = KeyEvent.KEYCODE_BUTTON_L2, label = "L2")
-            )
+            listOf(ButtonConfig(id = keyCode, label = label))
         ),
         secondaryDials = emptyList()
     )
@@ -439,7 +437,7 @@ class ControlsLayer(
 
     private fun handleEvent(event: Event) {
         when (event) {
-            is Event.Button -> game.sendKeyEvent(event.action, event.id)
+            is Event.Button -> sink(event.action, event.id)
             is Event.Direction -> if (event.id == ID_DPAD) updateDpad(event.xAxis, event.yAxis)
             else -> Unit
         }
@@ -454,13 +452,13 @@ class ControlsLayer(
 
         for (key in heldDpad.toList()) {
             if (key !in wanted) {
-                game.sendKeyEvent(KeyEvent.ACTION_UP, key)
+                sink(KeyEvent.ACTION_UP, key)
                 heldDpad.remove(key)
             }
         }
         for (key in wanted) {
             if (key !in heldDpad) {
-                game.sendKeyEvent(KeyEvent.ACTION_DOWN, key)
+                sink(KeyEvent.ACTION_DOWN, key)
                 heldDpad.add(key)
             }
         }
