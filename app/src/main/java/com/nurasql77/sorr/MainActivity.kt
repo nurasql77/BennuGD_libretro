@@ -1,301 +1,265 @@
 package com.nurasql77.sorr
 
-import android.Manifest
-import android.content.Context
-import android.content.Intent
-import android.content.pm.PackageManager
-import android.graphics.Color
-import android.net.Uri
-import android.os.Build
-import android.os.Bundle
-import android.os.Environment
-import android.provider.DocumentsContract
-import android.provider.Settings
-import android.system.Os
-import android.view.Gravity
-import android.view.InputDevice
+import android.app.Activity
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.os.Handler
+import android.os.HandlerThread
+import android.os.SystemClock
 import android.view.KeyEvent
-import android.view.ViewGroup
-import android.view.WindowManager
-import android.widget.Button
-import android.widget.FrameLayout
-import android.widget.LinearLayout
-import android.widget.TextView
-import android.widget.Toast
-import androidx.activity.ComponentActivity
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.core.content.ContextCompat
-import androidx.core.view.WindowCompat
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
+import android.view.PixelCopy
 import com.swordfish.libretrodroid.GLRetroView
-import com.swordfish.libretrodroid.GLRetroViewData
-import java.io.File
+import java.io.ByteArrayOutputStream
+import java.io.DataInputStream
+import java.io.DataOutputStream
+import java.net.Inet4Address
+import java.net.InetSocketAddress
+import java.net.NetworkInterface
+import java.net.ServerSocket
+import java.net.Socket
+import java.util.Collections
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
-class MainActivity : ComponentActivity() {
+/**
+ * LAN ойыны: Host телефон ойынды іске қосады және 2-ойыншыға видео жібереді,
+ * Guest телефон видеоны көрсетіп, өз түймелерін Host-қа жібереді (2-ойыншы = 2-порт).
+ */
+object Net {
+    const val PORT = 47601
+    const val MSG_INPUT = 1   // [1][action: u8][keyCode: i32]
+    const val MSG_FRAME = 2   // [2][length: i32][JPEG]
+    const val FRAME_WIDTH = 640
+    const val FRAME_INTERVAL_MS = 45L   // шамамен 22 кадр/с
+    const val JPEG_QUALITY = 65
 
-    companion object {
-        private const val PREFS = "sorr"
-        private const val KEY_PATH = "sorr_path"
-        private const val CORE_NAME = "libbennugd_libretro.so"
-    }
-
-    private val prefs by lazy { getSharedPreferences(PREFS, Context.MODE_PRIVATE) }
-    private var retroView: GLRetroView? = null
-    private var controlsLayer: ControlsLayer? = null
-    private var waitingForStorageAccess = false
-
-    // SoRR папкасын таңдау
-    private val pickFolder = registerForActivityResult(
-        ActivityResultContracts.OpenDocumentTree()
-    ) { uri: Uri? ->
-        if (uri == null) return@registerForActivityResult
-        val path = treeUriToPath(uri)
-        if (path == null) {
-            toast("Папка жолын анықтау мүмкін болмады")
-        } else {
-            prefs.edit().putString(KEY_PATH, path).apply()
-        }
-        showMenu()
-    }
-
-    // Android 10 және одан төмен үшін рұқсат
-    private val legacyPermission = registerForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) {
-        if (hasStorageAccess()) {
-            startGame()
-        } else {
-            toast("Файлдарға рұқсат берілмеді")
-        }
-    }
-
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        showMenu()
-    }
-
-    override fun onResume() {
-        super.onResume()
-        // "Барлық файлдарға рұқсат" баптауынан қайтқанда ойынды бастау
-        if (waitingForStorageAccess && hasStorageAccess()) {
-            waitingForStorageAccess = false
-            startGame()
-        }
-    }
-
-    // ---------- Мәзір ----------
-
-    private fun showMenu() {
-        retroView = null
-        controlsLayer = null
-        val savedPath = prefs.getString(KEY_PATH, null)
-
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            setBackgroundColor(Color.BLACK)
-            setPadding(48, 48, 48, 48)
-        }
-
-        val title = TextView(this).apply {
-            text = "Streets of Rage Remake"
-            textSize = 26f
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER
-        }
-        root.addView(title)
-
-        val info = TextView(this).apply {
-            text = if (savedPath != null) "Папка: $savedPath" else "SoRR папкасы таңдалмаған"
-            textSize = 14f
-            setTextColor(Color.LTGRAY)
-            gravity = Gravity.CENTER
-            setPadding(0, 24, 0, 32)
-        }
-        root.addView(info)
-
-        if (savedPath != null) {
-            val play = Button(this).apply {
-                text = "Ойынды бастау"
-                setOnClickListener { startGame() }
+    /** Осы телефонның Wi-Fi / hotspot IPv4 адресі. */
+    fun localIp(): String? {
+        try {
+            val list = NetworkInterface.getNetworkInterfaces() ?: return null
+            for (ni in Collections.list(list)) {
+                if (!ni.isUp || ni.isLoopback) continue
+                for (addr in Collections.list(ni.inetAddresses)) {
+                    if (addr is Inet4Address && !addr.isLoopbackAddress && addr.isSiteLocalAddress) {
+                        return addr.hostAddress
+                    }
+                }
             }
-            root.addView(play)
+        } catch (e: Exception) {
+            // IP табылмады
         }
-
-        val choose = Button(this).apply {
-            text = "SoRR папкасын таңдау"
-            setOnClickListener { pickFolder.launch(null) }
-        }
-        root.addView(choose)
-
-        setContentView(root)
+        return null
     }
+}
 
-    // ---------- Рұқсат ----------
+/** Host жағы: 2-ойыншыны қабылдайды, видео жібереді, оның түймелерін 2-портқа береді. */
+class HostServer(
+    private val activity: Activity,
+    private val game: GLRetroView,
+    private val onStatus: (String) -> Unit
+) {
+    @Volatile private var running = false
+    private var server: ServerSocket? = null
+    private var pixelThread: HandlerThread? = null
+    private var clientSocket: Socket? = null
 
-    private fun hasStorageAccess(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            Environment.isExternalStorageManager()
-        } else {
-            ContextCompat.checkSelfPermission(
-                this, Manifest.permission.READ_EXTERNAL_STORAGE
-            ) == PackageManager.PERMISSION_GRANTED
-        }
-    }
+    fun start() {
+        running = true
+        pixelThread = HandlerThread("sorr-pixelcopy").also { it.start() }
 
-    private fun requestStorageAccess() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        Thread {
             try {
-                startActivity(
-                    Intent(
-                        Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                        Uri.parse("package:$packageName")
-                    )
-                )
+                val s = ServerSocket().apply {
+                    reuseAddress = true
+                    bind(InetSocketAddress(Net.PORT))
+                }
+                server = s
+                while (running) {
+                    val sock = s.accept()
+                    handleClient(sock)
+                }
             } catch (e: Exception) {
-                startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+                if (running) status("Желі қатесі: ${e.message}")
             }
-        } else {
-            legacyPermission.launch(
-                arrayOf(
-                    Manifest.permission.READ_EXTERNAL_STORAGE,
-                    Manifest.permission.WRITE_EXTERNAL_STORAGE
-                )
-            )
+        }.also {
+            it.isDaemon = true
+            it.start()
         }
     }
 
-    // ---------- Ойынды бастау ----------
+    fun stop() {
+        running = false
+        try { clientSocket?.close() } catch (e: Exception) { }
+        try { server?.close() } catch (e: Exception) { }
+        pixelThread?.quitSafely()
+        pixelThread = null
+    }
 
-    private fun startGame() {
-        val folderPath = prefs.getString(KEY_PATH, null)
-        val folder = folderPath?.let { File(it) }
-        if (folder == null || !folder.isDirectory) {
-            toast("SoRR папкасын қайта таңдаңыз")
-            showMenu()
-            return
-        }
+    private fun status(text: String) {
+        activity.runOnUiThread { onStatus(text) }
+    }
 
-        if (!hasStorageAccess()) {
-            waitingForStorageAccess = true
-            toast("Файлдарға рұқсат беріңіз")
-            requestStorageAccess()
-            return
-        }
+    private fun handleClient(sock: Socket) {
+        clientSocket = sock
+        sock.tcpNoDelay = true
+        status("2-ойыншы қосылды")
 
-        val dat = folder.listFiles()?.firstOrNull {
-            it.isFile && it.name.equals("SorR.dat", ignoreCase = true)
-        }
-        if (dat == null) {
-            toast("SorR.dat табылмады: ${folder.absolutePath}")
-            return
-        }
-
-        val core = File(applicationInfo.nativeLibraryDir, CORE_NAME)
-        if (!core.exists()) {
-            toast("Core табылмады: ${core.absolutePath}")
-            return
-        }
-
-        val saves = File(folder, "savegame")
-        if (!saves.exists()) saves.mkdirs()
+        val alive = AtomicBoolean(true)
+        val held = mutableSetOf<Int>()
 
         try {
-            // Core өз ішінде APK қолтаңбасын тексеру үшін APK жолын алады
-            Os.setenv("SORR_APK_PATH", applicationInfo.sourceDir, true)
+            val input = DataInputStream(sock.getInputStream().buffered())
+            val out = DataOutputStream(sock.getOutputStream().buffered())
 
-            val data = GLRetroViewData(this).apply {
-                coreFilePath = core.absolutePath
-                gameFilePath = dat.absolutePath
-                systemDirectory = folder.absolutePath
-                savesDirectory = saves.absolutePath
+            Thread { sendFrames(out, alive) }.also {
+                it.isDaemon = true
+                it.start()
             }
 
-            val view = GLRetroView(this, data)
-            lifecycle.addObserver(view)
-            retroView = view
-
-            val container = FrameLayout(this)
-            container.addView(
-                view,
-                FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT
-                )
-            )
-
-            // Сенсорлық басқару (орны, өлшемі, мөлдірлігі өзгертіледі және сақталады)
-            val layer = ControlsLayer(this, view, prefs)
-            layer.addTo(container)
-            controlsLayer = layer
-
-            setContentView(container)
-            enterImmersiveMode()
-        } catch (e: Throwable) {
-            toast("Қате: ${e.message}")
-            showMenu()
-        }
-    }
-
-    private fun enterImmersiveMode() {
-        WindowCompat.setDecorFitsSystemWindows(window, false)
-        val controller = WindowInsetsControllerCompat(window, window.decorView)
-        controller.hide(WindowInsetsCompat.Type.systemBars())
-        controller.systemBarsBehavior =
-            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-    }
-
-    // ---------- Басқару (геймпад) ----------
-
-    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        val view = retroView ?: return super.dispatchKeyEvent(event)
-
-        // Артқа түймесі: алдымен басқаруды өзгерту режимін жабады, әйтпесе ойыннан шығады
-        if (event.keyCode == KeyEvent.KEYCODE_BACK) {
-            if (event.action == KeyEvent.ACTION_UP) {
-                if (controlsLayer?.handleBack() != true) finish()
+            while (running && alive.get()) {
+                val type = input.readUnsignedByte()
+                if (type == Net.MSG_INPUT) {
+                    val action = input.readUnsignedByte()
+                    val keyCode = input.readInt()
+                    if (action == KeyEvent.ACTION_DOWN) held.add(keyCode) else held.remove(keyCode)
+                    activity.runOnUiThread { game.sendKeyEvent(action, keyCode, 1) }
+                }
             }
-            return true
-        }
-        // Дыбыс түймелерін жүйеге қалдырамыз
-        if (event.keyCode == KeyEvent.KEYCODE_VOLUME_UP ||
-            event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN
-        ) {
-            return super.dispatchKeyEvent(event)
-        }
-
-        // Нақты геймпад қосылса, экрандағы түймелерді жасырамыз
-        if ((event.source and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD) {
-            controlsLayer?.onPhysicalGamepad()
-        }
-
-        view.sendKeyEvent(event.action, event.keyCode)
-        return true
-    }
-
-    // ---------- Көмекші ----------
-
-    // content://...externalstorage.../tree/primary%3ASoRR  ->  /storage/emulated/0/SoRR
-    private fun treeUriToPath(uri: Uri): String? {
-        return try {
-            val docId = DocumentsContract.getTreeDocumentId(uri) // мысалы "primary:SoRR"
-            val parts = docId.split(":", limit = 2)
-            val volume = parts[0]
-            val relative = if (parts.size > 1) parts[1] else ""
-            val base = if (volume.equals("primary", ignoreCase = true)) {
-                Environment.getExternalStorageDirectory().absolutePath
-            } else {
-                "/storage/$volume"
-            }
-            if (relative.isEmpty()) base else "$base/$relative"
         } catch (e: Exception) {
-            null
+            // клиент ажыратылды
+        } finally {
+            alive.set(false)
+            // Ұсталып қалған түймелерді босатамыз
+            val toRelease = held.toList()
+            activity.runOnUiThread {
+                for (k in toRelease) game.sendKeyEvent(KeyEvent.ACTION_UP, k, 1)
+            }
+            try { sock.close() } catch (e: Exception) { }
+            if (running) status("2-ойыншы ажыратылды")
         }
     }
 
-    private fun toast(text: String) {
-        Toast.makeText(this, text, Toast.LENGTH_LONG).show()
+    private fun sendFrames(out: DataOutputStream, alive: AtomicBoolean) {
+        var bmp: Bitmap? = null
+        val baos = ByteArrayOutputStream(64 * 1024)
+
+        try {
+            while (running && alive.get()) {
+                val t0 = SystemClock.elapsedRealtime()
+                val vw = game.width
+                val vh = game.height
+                val looper = pixelThread?.looper
+
+                if (vw > 0 && vh > 0 && looper != null) {
+                    val w = Net.FRAME_WIDTH
+                    val h = (w * vh / vw).coerceAtLeast(2)
+                    var target = bmp
+                    if (target == null || target.width != w || target.height != h) {
+                        target = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                        bmp = target
+                    }
+
+                    val latch = CountDownLatch(1)
+                    val ok = AtomicBoolean(false)
+                    PixelCopy.request(game, target, { result ->
+                        ok.set(result == PixelCopy.SUCCESS)
+                        latch.countDown()
+                    }, Handler(looper))
+                    latch.await(500, TimeUnit.MILLISECONDS)
+
+                    if (ok.get()) {
+                        baos.reset()
+                        target.compress(Bitmap.CompressFormat.JPEG, Net.JPEG_QUALITY, baos)
+                        out.writeByte(Net.MSG_FRAME)
+                        out.writeInt(baos.size())
+                        baos.writeTo(out)
+                        out.flush()
+                    }
+                }
+
+                val spent = SystemClock.elapsedRealtime() - t0
+                val wait = Net.FRAME_INTERVAL_MS - spent
+                if (wait > 0) Thread.sleep(wait)
+            }
+        } catch (e: Exception) {
+            alive.set(false)
+        }
+    }
+}
+
+/** Guest жағы: Host-қа қосылады, видеоны көрсетеді, түймелерді жібереді. */
+class GuestClient(
+    private val host: String,
+    private val activity: Activity,
+    private val onFrame: (Bitmap) -> Unit,
+    private val onStatus: (String) -> Unit,
+    private val onClosed: () -> Unit
+) {
+    @Volatile private var running = false
+    @Volatile private var out: DataOutputStream? = null
+    private var socket: Socket? = null
+    private val sender = Executors.newSingleThreadExecutor()
+
+    fun start() {
+        running = true
+        Thread {
+            try {
+                val s = Socket()
+                s.tcpNoDelay = true
+                s.connect(InetSocketAddress(host, Net.PORT), 5000)
+                socket = s
+                out = DataOutputStream(s.getOutputStream().buffered())
+                activity.runOnUiThread { onStatus("Host-қа қосылды") }
+
+                val input = DataInputStream(s.getInputStream().buffered())
+                while (running) {
+                    val type = input.readUnsignedByte()
+                    if (type == Net.MSG_FRAME) {
+                        val len = input.readInt()
+                        if (len <= 0 || len > 4_000_000) break
+                        val buf = ByteArray(len)
+                        input.readFully(buf)
+                        val bmp = BitmapFactory.decodeByteArray(buf, 0, len)
+                        if (bmp != null) activity.runOnUiThread { onFrame(bmp) }
+                    }
+                }
+            } catch (e: Exception) {
+                if (running) {
+                    activity.runOnUiThread { onStatus("Байланыс жоқ: ${e.message}") }
+                }
+            } finally {
+                val wasRunning = running
+                running = false
+                try { socket?.close() } catch (e: Exception) { }
+                if (wasRunning) activity.runOnUiThread { onClosed() }
+            }
+        }.also {
+            it.isDaemon = true
+            it.start()
+        }
+    }
+
+    fun sendKey(action: Int, keyCode: Int) {
+        val o = out ?: return
+        sender.execute {
+            try {
+                synchronized(o) {
+                    o.writeByte(Net.MSG_INPUT)
+                    o.writeByte(action)
+                    o.writeInt(keyCode)
+                    o.flush()
+                }
+            } catch (e: Exception) {
+                // жіберілмеді
+            }
+        }
+    }
+
+    fun stop() {
+        running = false
+        try { socket?.close() } catch (e: Exception) { }
+        sender.shutdownNow()
     }
 }
