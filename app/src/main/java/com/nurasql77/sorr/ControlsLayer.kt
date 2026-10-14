@@ -373,6 +373,32 @@ class ControlsLayer(
 
     // ---------- Сыртқы басқару ----------
 
+    /** P1/P2 ауыстырғыш: өз түймелерімізді қай ойыншының портына жіберетінімізді ойын ішінде ауыстырады. */
+    fun addPortSwitch(container: FrameLayout, labelProvider: () -> String, onToggle: () -> Unit) {
+        val button = Button(activity).apply {
+            text = labelProvider()
+            alpha = 0.55f
+            minWidth = 0
+            minHeight = 0
+            setPadding(dp(10), 0, dp(10), 0)
+            setOnClickListener {
+                onToggle()
+                text = labelProvider()
+            }
+        }
+        container.addView(
+            button,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                dp(36),
+                Gravity.TOP or Gravity.START
+            ).apply {
+                leftMargin = dp(8)
+                topMargin = dp(56)
+            }
+        )
+    }
+
     /** Артқа түймесі: өзгерту режимінде болса, соны жабады. */
     fun handleBack(): Boolean {
         if (editMode) {
