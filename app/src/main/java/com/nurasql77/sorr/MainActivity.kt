@@ -278,8 +278,9 @@ class MainActivity : ComponentActivity() {
             // Сынақ режимі: өз түймелеріміз 2-ойыншының портына барады (core P2-ні қабылдайтынын тексеру үшін)
             val p2Port = prefs.getInt(KEY_P2_PORT, 1)
             val testP2 = prefs.getBoolean(KEY_P2_TEST, false)
+            var activePort = if (testP2) p2Port else 0
             val sink: (Int, Int) -> Unit = { action, keyCode ->
-                view.sendKeyEvent(action, keyCode, if (testP2) p2Port else 0)
+                view.sendKeyEvent(action, keyCode, activePort)
             }
             keySink = sink
 
@@ -319,6 +320,13 @@ class MainActivity : ComponentActivity() {
             val layer = ControlsLayer(this, prefs, sink)
             layer.addTo(container)
             controlsLayer = layer
+
+            // P1/P2 ауыстырғыш: SoRR-дың Controls мәзірінде әр ойыншының түймелерін бөлек тағайындау үшін
+            layer.addPortSwitch(
+                container,
+                { if (activePort == 0) "P1" else "P2" },
+                { activePort = if (activePort == 0) p2Port else 0 }
+            )
 
             setContentView(container)
             enterImmersiveMode()
