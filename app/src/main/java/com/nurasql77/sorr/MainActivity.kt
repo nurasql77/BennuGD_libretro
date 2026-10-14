@@ -42,6 +42,7 @@ class MainActivity : ComponentActivity() {
         private const val KEY_PATH = "sorr_path"
         private const val KEY_GUEST_IP = "guest_ip"
         private const val KEY_P2_PORT = "p2_port"
+        private const val KEY_P2_TEST = "p2_test"
         private const val CORE_NAME = "libbennugd_libretro.so"
     }
 
@@ -166,6 +167,14 @@ class MainActivity : ComponentActivity() {
                     showMenu()
                 }
             })
+            root.addView(Button(this).apply {
+                val on = prefs.getBoolean(KEY_P2_TEST, false)
+                text = "Сынақ: менің түймелерім = 2-ойыншы: " + (if (on) "ҚОСУЛЫ" else "өшірулі")
+                setOnClickListener {
+                    prefs.edit().putBoolean(KEY_P2_TEST, !on).apply()
+                    showMenu()
+                }
+            })
         }
 
         root.addView(Button(this).apply {
@@ -266,7 +275,12 @@ class MainActivity : ComponentActivity() {
             lifecycle.addObserver(view)
             retroView = view
 
-            val sink: (Int, Int) -> Unit = { action, keyCode -> view.sendKeyEvent(action, keyCode) }
+            // Сынақ режимі: өз түймелеріміз 2-ойыншының портына барады (core P2-ні қабылдайтынын тексеру үшін)
+            val p2Port = prefs.getInt(KEY_P2_PORT, 1)
+            val testP2 = prefs.getBoolean(KEY_P2_TEST, false)
+            val sink: (Int, Int) -> Unit = { action, keyCode ->
+                view.sendKeyEvent(action, keyCode, if (testP2) p2Port else 0)
+            }
             keySink = sink
 
             val container = FrameLayout(this)
@@ -278,6 +292,29 @@ class MainActivity : ComponentActivity() {
                 )
             )
 
+            // Host режимінде Guest-тан келген түймелерді көрсететін диагностика жазуы
+            val hostInfo: TextView? = if (asHost) {
+                TextView(this).apply {
+                    setTextColor(Color.WHITE)
+                    textSize = 12f
+                    alpha = 0.7f
+                    setBackgroundColor(0x66000000)
+                    setPadding(16, 4, 16, 4)
+                    text = "2P порт $p2Port: Guest-тан оқиға әлі жоқ"
+                }.also {
+                    container.addView(
+                        it,
+                        FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT,
+                            Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                        ).apply { topMargin = 4 }
+                    )
+                }
+            } else {
+                null
+            }
+
             // Сенсорлық басқару (орны, өлшемі, мөлдірлігі өзгертіледі және сақталады)
             val layer = ControlsLayer(this, prefs, sink)
             layer.addTo(container)
@@ -287,7 +324,13 @@ class MainActivity : ComponentActivity() {
             enterImmersiveMode()
 
             if (asHost) {
-                val server = HostServer(this, view, prefs.getInt(KEY_P2_PORT, 1)) { toast(it) }
+                var count = 0
+                val server = HostServer(this, view, p2Port, { action, keyCode ->
+                    count++
+                    val name = KeyEvent.keyCodeToString(keyCode).removePrefix("KEYCODE_")
+                    val arrow = if (action == KeyEvent.ACTION_DOWN) "↓" else "↑"
+                    hostInfo?.text = "2P порт $p2Port: $count оқиға • $name $arrow"
+                }) { toast(it) }
                 server.start()
                 hostServer = server
                 toast("LAN Host: екінші телефон мына IP-ге қосылсын: ${Net.localIp() ?: "белгісіз"}")
@@ -421,18 +464,18 @@ class MainActivity : ComponentActivity() {
             )
         )
 
-        val layer = ControlsLayer(this, prefs, sink)
-        layer.addTo(container)
-        controlsLayer = layer
-
         container.addView(
             stats,
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-            ).apply { bottomMargin = 8 }
+                Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            ).apply { topMargin = 4 }
         )
+
+        val layer = ControlsLayer(this, prefs, sink)
+        layer.addTo(container)
+        controlsLayer = layer
 
         setContentView(container)
         enterImmersiveMode()
