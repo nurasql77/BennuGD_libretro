@@ -111,8 +111,8 @@ class ControlsLayer(
     // ---------- Құру ----------
 
     fun addTo(container: FrameLayout) {
-        val left = createPadGroup("left", "Сол жақ: D-pad", 0.17f, 0.72f, 1f, buildLeftConfig())
-        val right = createPadGroup("right", "Оң жақ: A B X Y", 0.83f, 0.72f, 1f, buildRightConfig())
+        val left = createPadGroup("left", "Левый блок: крестовина", 0.17f, 0.72f, 1f, buildLeftConfig())
+        val right = createPadGroup("right", "Правый блок: A B X Y", 0.83f, 0.72f, 1f, buildRightConfig())
         val l1 = createGroup("l1", "L1", 0.12f, 0.15f, 0.2f, SingleButtonView(activity, "L1", KeyEvent.KEYCODE_BUTTON_L1, sink))
         val l2 = createGroup("l2", "L2", 0.24f, 0.15f, 0.2f, SingleButtonView(activity, "L2", KeyEvent.KEYCODE_BUTTON_L2, sink))
         val r2 = createGroup("r2", "R2", 0.76f, 0.15f, 0.2f, SingleButtonView(activity, "R2", KeyEvent.KEYCODE_BUTTON_R2, sink))
@@ -260,11 +260,11 @@ class ControlsLayer(
         panelTitle = TextView(activity).apply {
             setTextColor(Color.WHITE)
             textSize = 15f
-            text = "Блокты сүйреп жылжытыңыз"
+            text = "Перетащите блок пальцем"
         }
         panel.addView(panelTitle)
 
-        panel.addView(label("Өлшемі"))
+        panel.addView(label("Размер"))
         sizeBar = SeekBar(activity).apply {
             max = ((MAX_SCALE - MIN_SCALE) * 100).toInt()
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -281,7 +281,7 @@ class ControlsLayer(
         }
         panel.addView(sizeBar)
 
-        panel.addView(label("Мөлдірлігі"))
+        panel.addView(label("Прозрачность"))
         alphaBar = SeekBar(activity).apply {
             max = ((1f - MIN_ALPHA) * 100).toInt()
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -300,11 +300,11 @@ class ControlsLayer(
 
         val row = LinearLayout(activity).apply { orientation = LinearLayout.HORIZONTAL }
         val reset = Button(activity).apply {
-            text = "Бастапқы"
+            text = "Сбросить"
             setOnClickListener { resetSelected() }
         }
         val done = Button(activity).apply {
-            text = "Дайын"
+            text = "Готово"
             setOnClickListener { exitEdit() }
         }
         row.addView(reset, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
