@@ -3,6 +3,9 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+def ciVersionCode = (project.findProperty('versionCode') ?: '1').toString().toInteger()
+def ciVersionName = (project.findProperty('versionName') ?: '1.0').toString()
+
 android {
     namespace 'com.nurasql77.sorr'
     compileSdk 35
@@ -11,8 +14,9 @@ android {
         applicationId 'com.nurasql77.sorr'
         minSdk 24
         targetSdk 34
-        versionCode 1
-        versionName '1.0'
+        // CI передаёт -PversionCode=N -PversionName=1.0.N
+        versionCode ciVersionCode
+        versionName ciVersionName
 
         // Core тек ARM64 үшін жиналған
         ndk {
