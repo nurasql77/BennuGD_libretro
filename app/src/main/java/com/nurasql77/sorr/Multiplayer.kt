@@ -96,6 +96,7 @@ class HostServer(
     private val activity: Activity,
     private val game: GLRetroView,
     private val guestPort: Int,
+    private val onGuestInput: (action: Int, keyCode: Int) -> Unit,
     private val onStatus: (String) -> Unit
 ) {
     @Volatile private var running = false
@@ -191,7 +192,10 @@ class HostServer(
                         val action = input.readUnsignedByte()
                         val keyCode = input.readInt()
                         if (action == KeyEvent.ACTION_DOWN) held.add(keyCode) else held.remove(keyCode)
-                        activity.runOnUiThread { game.sendKeyEvent(action, keyCode, guestPort) }
+                        activity.runOnUiThread {
+                            game.sendKeyEvent(action, keyCode, guestPort)
+                            onGuestInput(action, keyCode)
+                        }
                     }
                     Net.MSG_PING -> {
                         val ts = input.readLong()
