@@ -1,0 +1,32 @@
+# Подключается через -DCMAKE_PROJECT_INCLUDE=... и добавляет sorr_guard.c в библиотеку ядра,
+# не меняя CMakeLists.txt проекта.
+set(SORR_GUARD_SRC "${CMAKE_CURRENT_LIST_DIR}/sorr_guard.c")
+
+function(sorr_collect_targets dir out_var)
+  get_property(local_targets DIRECTORY "${dir}" PROPERTY BUILDSYSTEM_TARGETS)
+  get_property(subdirs DIRECTORY "${dir}" PROPERTY SUBDIRECTORIES)
+  set(all ${local_targets})
+  foreach(sub IN LISTS subdirs)
+    sorr_collect_targets("${sub}" sub_targets)
+    list(APPEND all ${sub_targets})
+  endforeach()
+  set(${out_var} ${all} PARENT_SCOPE)
+endfunction()
+
+function(sorr_add_guard)
+  sorr_collect_targets("${CMAKE_SOURCE_DIR}" targets)
+  set(found FALSE)
+  foreach(t IN LISTS targets)
+    get_target_property(type ${t} TYPE)
+    if((type STREQUAL "SHARED_LIBRARY" OR type STREQUAL "MODULE_LIBRARY") AND t MATCHES "libretro")
+      target_sources(${t} PRIVATE "${SORR_GUARD_SRC}")
+      message(STATUS "SoRR guard: added to target ${t}")
+      set(found TRUE)
+    endif()
+  endforeach()
+  if(NOT found)
+    message(WARNING "SoRR guard: подходящая библиотека ядра не найдена (цели: ${targets})")
+  endif()
+endfunction()
+
+cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL sorr_add_guard)
