@@ -25,7 +25,6 @@ import com.swordfish.radialgamepad.library.config.ButtonConfig
 import com.swordfish.radialgamepad.library.config.CrossConfig
 import com.swordfish.radialgamepad.library.config.PrimaryDialConfig
 import com.swordfish.radialgamepad.library.config.RadialGamePadConfig
-import com.swordfish.radialgamepad.library.config.SecondaryDialConfig
 import com.swordfish.radialgamepad.library.event.Event
 import kotlinx.coroutines.launch
 
@@ -119,7 +118,10 @@ class ControlsLayer(
         val r2 = createGroup("r2", "R2", 0.76f, 0.15f, 0.2f, SingleButtonView(activity, "R2", KeyEvent.KEYCODE_BUTTON_R2, sink))
         val r1 = createGroup("r1", "R1", 0.88f, 0.15f, 0.2f, SingleButtonView(activity, "R1", KeyEvent.KEYCODE_BUTTON_R1, sink))
 
-        for (g in listOf(left, right, l1, l2, r2, r1)) {
+        val select = createGroup("select", "SELECT", 0.42f, 0.90f, 0.2f, SingleButtonView(activity, "SELECT", KeyEvent.KEYCODE_BUTTON_SELECT, sink))
+        val start = createGroup("start", "START", 0.58f, 0.90f, 0.2f, SingleButtonView(activity, "START", KeyEvent.KEYCODE_BUTTON_START, sink))
+
+        for (g in listOf(left, right, l1, l2, r2, r1, select, start)) {
             container.addView(g.holder)
             applyLayout(g)
         }
@@ -388,7 +390,7 @@ class ControlsLayer(
 
     // ---------- Конфигурациялар ----------
 
-    // Сол жақ: D-pad (диагональмен) + SELECT
+    // Сол жақ: D-pad (диагональмен)
     private fun buildLeftConfig() = RadialGamePadConfig(
         sockets = 6,
         primaryDial = PrimaryDialConfig.Cross(
@@ -397,20 +399,10 @@ class ControlsLayer(
                 useDiagonals = true
             )
         ),
-        secondaryDials = listOf(
-            SecondaryDialConfig.SingleButton(
-                index = 1,
-                scale = 1f,
-                distance = 0f,
-                ButtonConfig(
-                    id = KeyEvent.KEYCODE_BUTTON_SELECT,
-                    label = "SELECT"
-                )
-            )
-        )
+        secondaryDials = emptyList()
     )
 
-    // Оң жақ: A, B, X, Y + START
+    // Оң жақ: A, B, X, Y
     private fun buildRightConfig() = RadialGamePadConfig(
         sockets = 6,
         primaryDial = PrimaryDialConfig.PrimaryButtons(
@@ -421,17 +413,7 @@ class ControlsLayer(
                 ButtonConfig(id = KeyEvent.KEYCODE_BUTTON_Y, label = "Y")
             )
         ),
-        secondaryDials = listOf(
-            SecondaryDialConfig.SingleButton(
-                index = 2,
-                scale = 1f,
-                distance = 0f,
-                ButtonConfig(
-                    id = KeyEvent.KEYCODE_BUTTON_START,
-                    label = "START"
-                )
-            )
-        )
+        secondaryDials = emptyList()
     )
 
     // ---------- Оқиғалар ----------
@@ -503,7 +485,7 @@ class SingleButtonView(
         ring.alpha = 140
         canvas.drawCircle(cx, cy, r, ring)
 
-        text.textSize = r * 0.75f
+        text.textSize = if (label.length > 2) r * 0.36f else r * 0.75f
         text.alpha = 230
         canvas.drawText(label, cx, cy + text.textSize * 0.35f, text)
     }
