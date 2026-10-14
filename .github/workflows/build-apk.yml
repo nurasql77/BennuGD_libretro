@@ -4,13 +4,22 @@ on:
   push:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      APP_VERSION: 1.0.${{ github.run_number }}
     steps:
       - uses: actions/checkout@v4
 
-      # ---------- 1. Core (.so), тек ARM64 ----------
+      # ---------- 1. Защищённые строки (ссылки) ----------
+      - name: Generate protected strings
+        run: python3 tools/gen_strings.py
+
+      # ---------- 2. Ядро (.so), только ARM64 ----------
       - name: Build core (arm64-v8a)
         run: |
           cmake -B build-core \
@@ -19,6 +28,7 @@ jobs:
             -DANDROID_PLATFORM=24 \
             -DANDROID_ABI=arm64-v8a \
             -DCMAKE_WARN_DEPRECATED=false \
+            -DCMAKE_PROJECT_INCLUDE="${GITHUB_WORKSPACE}/sorr/sorr_inject.cmake" \
             -S .
           cmake --build build-core
 
@@ -30,14 +40,27 @@ jobs:
             ls -R build-core | head -n 80
             exit 1
           fi
+          DEST=app/src/main/jniLibs/arm64-v8a/libbennugd_libretro.so
           mkdir -p app/src/main/jniLibs/arm64-v8a
-          cp "$SO" app/src/main/jniLibs/arm64-v8a/libbennugd_libretro.so
-          "$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip" --strip-unneeded app/src/main/jniLibs/arm64-v8a/libbennugd_libretro.so
+          cp "$SO" "$DEST"
+          LLVM_BIN="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          "$LLVM_BIN/llvm-strip" --strip-unneeded "$DEST"
           rm -f app/src/main/assets/bennugd_libretro.so
-          file app/src/main/jniLibs/arm64-v8a/libbennugd_libretro.so
+          file "$DEST"
           ls -l app/src/main/jniLibs/arm64-v8a
 
-      # ---------- 2. Қол қою ----------
+          # Проверяем, что защита попала в ядро и ссылка не лежит открытым текстом
+          if "$LLVM_BIN/llvm-nm" -D --defined-only "$DEST" | grep -q "Java_com_nurasql77_sorr_Native_link"; then
+            echo "Guard exported: OK"
+          else
+            echo "::warning::Защита не попала в ядро (нет функции Native_link). Telegram-кнопка и проверка подписи работать не будут. Пришлите CMakeLists.txt."
+          fi
+          if grep -q "t.me/android_port" "$DEST"; then
+            echo "::error::Ссылка найдена в .so открытым текстом"
+            exit 1
+          fi
+
+      # ---------- 3. Подпись ----------
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -75,7 +98,7 @@ jobs:
         run: |
           python3 tools/patch_guard.py app/src/main/jniLibs/arm64-v8a/libbennugd_libretro.so "$CERT_SHA256"
 
-      # ---------- 3. APK ----------
+      # ---------- 4. APK ----------
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.7
@@ -84,12 +107,32 @@ jobs:
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD || secrets.KEYSTORE_PASSWORD }}
-        run: gradle assembleRelease --stacktrace
+        run: >
+          gradle assembleRelease --stacktrace
+          -PversionCode=${{ github.run_number }}
+          -PversionName=${APP_VERSION}
+
+      - name: Name the APK
+        run: |
+          cp app/build/outputs/apk/release/app-release.apk "SoRR-Android-v${APP_VERSION}.apk"
+          ls -l SoRR-Android-v${APP_VERSION}.apk
 
       - uses: actions/upload-artifact@v4
         with:
           name: SoRR-release-apk
-          path: app/build/outputs/apk/release/*.apk
+          path: SoRR-Android-v*.apk
+
+      # ---------- 5. Релиз на GitHub ----------
+      - name: Create GitHub Release
+        if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "v${APP_VERSION}" "SoRR-Android-v${APP_VERSION}.apk" \
+            --target "${GITHUB_SHA}" \
+            --title "SoRR Android v${APP_VERSION}" \
+            --notes "Подписанный APK. Скачайте файл SoRR-Android-v${APP_VERSION}.apk и установите. Нужна папка SoRR с файлом SorR.dat."
 
       - name: Remove keystore
         if: always()
