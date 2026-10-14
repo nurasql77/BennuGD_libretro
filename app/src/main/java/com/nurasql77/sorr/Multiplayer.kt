@@ -147,7 +147,7 @@ class HostServer(
                     handleClient(sock)
                 }
             } catch (e: Exception) {
-                if (running) status("Желі қатесі: ${e.message}")
+                if (running) status("Ошибка сети: ${e.message}")
             }
         }.also {
             it.isDaemon = true
@@ -172,7 +172,7 @@ class HostServer(
         try { clientSocket?.close() } catch (e: Exception) { }
         clientSocket = sock
         sock.tcpNoDelay = true
-        status("2-ойыншы қосылды (порт $guestPort)")
+        status("Игрок 2 подключился (порт $guestPort)")
 
         val alive = AtomicBoolean(true)
         val held = mutableSetOf<Int>()
@@ -218,7 +218,7 @@ class HostServer(
                 for (k in toRelease) game.sendKeyEvent(KeyEvent.ACTION_UP, k, guestPort)
             }
             try { sock.close() } catch (e: Exception) { }
-            if (running) status("2-ойыншы ажыратылды")
+            if (running) status("Игрок 2 отключился")
         }
     }
 
@@ -277,7 +277,7 @@ class HostServer(
                         failures++
                         if (failures >= 30 && !reported) {
                             reported = true
-                            status("Видео түсіру істемей тұр (PixelCopy коды ${code.get()})")
+                            status("Захват видео не работает (код PixelCopy ${code.get()})")
                         }
                     }
                 }
@@ -384,7 +384,7 @@ class GuestClient(
                 s.connect(InetSocketAddress(host, Net.PORT), 5000)
                 socket = s
                 out = DataOutputStream(s.getOutputStream().buffered())
-                activity.runOnUiThread { onStatus("Host-қа қосылды") }
+                activity.runOnUiThread { onStatus("Подключено к хосту") }
 
                 startStatsLoop()
 
@@ -412,7 +412,7 @@ class GuestClient(
                 }
             } catch (e: Exception) {
                 if (running) {
-                    activity.runOnUiThread { onStatus("Байланыс жоқ: ${e.message}") }
+                    activity.runOnUiThread { onStatus("Нет связи: ${e.message}") }
                 }
             } finally {
                 val wasRunning = running
