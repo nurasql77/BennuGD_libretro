@@ -102,7 +102,16 @@ def main():
     if os.path.exists(icon):
         save_mipmaps(Image.open(icon))
     else:
-        print("branding/icon.png not found: default icon is used")
+        # Нет своей иконки: если иконок по умолчанию нет в репозитории, создаём их сами
+        missing = [
+            n for n in SIZES
+            if not os.path.exists(os.path.join(RES, f"mipmap-{n}", "ic_launcher.png"))
+        ]
+        if missing:
+            print("branding/icon.png not found and icons are missing: generating the default icon")
+            save_mipmaps(default_icon())
+        else:
+            print("branding/icon.png not found: committed default icon is used")
 
     for name in ("background.jpg", "background.jpeg", "background.png"):
         bg = os.path.join(ROOT, "branding", name)
