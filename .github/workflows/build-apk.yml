@@ -60,7 +60,13 @@ jobs:
             exit 1
           fi
 
-      # ---------- 3. Подпись ----------
+      # ---------- 3. Иконка и фон меню (branding/icon.png, branding/background.jpg) ----------
+      - name: Branding
+        run: |
+          pip install pillow
+          python3 tools/make_branding.py
+
+      # ---------- 4. Подпись ----------
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -98,7 +104,7 @@ jobs:
         run: |
           python3 tools/patch_guard.py app/src/main/jniLibs/arm64-v8a/libbennugd_libretro.so "$CERT_SHA256"
 
-      # ---------- 4. APK ----------
+      # ---------- 5. APK ----------
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.7
@@ -122,7 +128,7 @@ jobs:
           name: SoRR-release-apk
           path: SoRR-Android-v*.apk
 
-      # ---------- 5. Релиз на GitHub ----------
+      # ---------- 6. Релиз на GitHub ----------
       - name: Create GitHub Release
         if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
         env:
