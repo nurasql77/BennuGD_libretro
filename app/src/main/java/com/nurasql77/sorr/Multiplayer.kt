@@ -8,6 +8,7 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.Process
 import android.os.SystemClock
 import android.view.KeyEvent
 import android.view.PixelCopy
@@ -25,33 +26,47 @@ import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketTimeoutException
 import java.util.Collections
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 /**
- * LAN ойыны.
- *  - Host: ойынды іске қосады, видеоны (JPEG) Guest-қа жібереді, Guest түймелерін 2-ойыншы ретінде береді.
- *  - Guest: Host-ты автоматты табады (UDP broadcast) немесе IP бойынша қосылады.
+ * LAN-игра.
+ *  - Хост запускает игру, шлёт гостю видео (JPEG) и отдаёт его кнопки как игрока 2.
+ *  - Гость находит хост автоматически (UDP broadcast) или подключается по IP.
  */
 object Net {
-    const val PORT = 47601              // TCP: ойын байланысы
-    const val DISCOVERY_PORT = 47602    // UDP: Host іздеу
+    const val PORT = 47601              // TCP: игра
+    const val DISCOVERY_PORT = 47602    // UDP: поиск хоста
 
     const val MSG_INPUT = 1   // [1][action: u8][keyCode: i32]
     const val MSG_FRAME = 2   // [2][length: i32][JPEG]
     const val MSG_PING = 3    // [3][time: i64]
     const val MSG_PONG = 4    // [4][time: i64]
 
-    const val FRAME_WIDTH = 640
-    const val FRAME_INTERVAL_MS = 40L   // шамамен 25 кадр/с
-    const val QUALITY_START = 65
-    const val QUALITY_MIN = 35
-    const val QUALITY_MAX = 75
+    /** Ширина кадра, интервал между кадрами (мс), стартовое качество JPEG. */
+    class VideoPreset(val width: Int, val intervalMs: Long, val quality: Int) {
+        val fps: Int get() = (1000 / intervalMs).toInt()
+    }
 
-    /** Осы телефонның Wi-Fi / hotspot IPv4 адресі. */
+    // 0 = экономно, 1 = баланс, 2 = качество
+    val presets = listOf(
+        VideoPreset(480, 67, 55),
+        VideoPreset(640, 50, 65),
+        VideoPreset(800, 33, 70)
+    )
+
+    const val QUALITY_MIN = 35
+    const val QUALITY_MAX = 80
+
+    // Маленькие сетевые буферы: очередь старых кадров не копится, значит нет «ускорения» после лагов
+    const val SOCKET_BUFFER = 64 * 1024
+
+    /** IPv4-адрес этого телефона в Wi-Fi / точке доступа. */
     fun localIp(): String? {
         try {
             val list = NetworkInterface.getNetworkInterfaces() ?: return null
@@ -64,12 +79,12 @@ object Net {
                 }
             }
         } catch (e: Exception) {
-            // IP табылмады
+            // IP не найден
         }
         return null
     }
 
-    /** Барлық белсенді желілердің broadcast адрестері. */
+    /** Broadcast-адреса всех активных сетей. */
     fun broadcastAddresses(): List<InetAddress> {
         val result = mutableListOf<InetAddress>()
         try {
@@ -85,17 +100,18 @@ object Net {
                 }
             }
         } catch (e: Exception) {
-            // тек 255.255.255.255 қалады
+            // остаётся только 255.255.255.255
         }
         return result
     }
 }
 
-/** Host жағы. */
+/** Сторона хоста. */
 class HostServer(
     private val activity: Activity,
     private val game: GLRetroView,
     private val guestPort: Int,
+    private val preset: Net.VideoPreset,
     private val onGuestInput: (action: Int, keyCode: Int) -> Unit,
     private val onStatus: (String) -> Unit
 ) {
@@ -106,10 +122,12 @@ class HostServer(
 
     fun start() {
         running = true
-        pixelThread = HandlerThread("sorr-pixelcopy").also { it.start() }
+        // Низкий приоритет: захват видео не должен тормозить саму игру
+        pixelThread = HandlerThread("sorr-pixelcopy", Process.THREAD_PRIORITY_BACKGROUND).also { it.start() }
 
-        // 1) Guest-тарға "мен мұндамын" деп хабарлау
+        // 1) Сообщаем в сеть «я здесь»
         Thread {
+            Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
             var sock: DatagramSocket? = null
             try {
                 sock = DatagramSocket().apply { broadcast = true }
@@ -119,13 +137,13 @@ class HostServer(
                         try {
                             sock.send(DatagramPacket(payload, payload.size, addr, Net.DISCOVERY_PORT))
                         } catch (e: Exception) {
-                            // осы адрес жұмыс істемеді
+                            // этот адрес не сработал
                         }
                     }
                     Thread.sleep(1000)
                 }
             } catch (e: Exception) {
-                // тоқтатылды
+                // остановлено
             } finally {
                 sock?.close()
             }
@@ -134,7 +152,7 @@ class HostServer(
             it.start()
         }
 
-        // 2) Guest-ты қабылдау
+        // 2) Принимаем гостя
         Thread {
             try {
                 val s = ServerSocket().apply {
@@ -147,7 +165,11 @@ class HostServer(
                     handleClient(sock)
                 }
             } catch (e: Exception) {
-                if (running) status("Ошибка сети: ${e.message}")
+                if (running) status(tr(
+                    "Network error: ${e.message}",
+                    "Ошибка сети: ${e.message}",
+                    "Желі қатесі: ${e.message}"
+                ))
             }
         }.also {
             it.isDaemon = true
@@ -168,11 +190,16 @@ class HostServer(
     }
 
     private fun handleClient(sock: Socket) {
-        // Жаңа Guest келсе, ескісін жабамыз
+        // Новый гость: старого закрываем
         try { clientSocket?.close() } catch (e: Exception) { }
         clientSocket = sock
         sock.tcpNoDelay = true
-        status("Игрок 2 подключился (порт $guestPort)")
+        try { sock.sendBufferSize = Net.SOCKET_BUFFER } catch (e: Exception) { }
+        status(tr(
+            "Player 2 connected (port $guestPort)",
+            "Игрок 2 подключился (порт $guestPort)",
+            "2-ойыншы қосылды (порт $guestPort)"
+        ))
 
         val alive = AtomicBoolean(true)
         val held = mutableSetOf<Int>()
@@ -209,35 +236,39 @@ class HostServer(
                 }
             }
         } catch (e: Exception) {
-            // Guest ажыратылды
+            // гость отключился
         } finally {
             alive.set(false)
-            // Ұсталып қалған түймелерді босатамыз
+            // Отпускаем зажатые кнопки
             val toRelease = held.toList()
             activity.runOnUiThread {
                 for (k in toRelease) game.sendKeyEvent(KeyEvent.ACTION_UP, k, guestPort)
             }
             try { sock.close() } catch (e: Exception) { }
-            if (running) status("Игрок 2 отключился")
+            if (running) status(tr("Player 2 disconnected", "Игрок 2 отключился", "2-ойыншы ажыратылды"))
         }
     }
 
     private fun sendFrames(out: DataOutputStream, alive: AtomicBoolean) {
+        Process.setThreadPriority(Process.THREAD_PRIORITY_BACKGROUND)
+
         var bmp: Bitmap? = null
         val baos = ByteArrayOutputStream(64 * 1024)
-        var quality = Net.QUALITY_START
+        var quality = preset.quality
+        var interval = preset.intervalMs
+        var nextAt = SystemClock.elapsedRealtime()
         var failures = 0
         var reported = false
 
         try {
             while (running && alive.get()) {
-                val t0 = SystemClock.elapsedRealtime()
                 val vw = game.width
                 val vh = game.height
                 val looper = pixelThread?.looper
+                var sendMs = 0L
 
                 if (vw > 0 && vh > 0 && looper != null) {
-                    val w = Net.FRAME_WIDTH
+                    val w = preset.width
                     val h = (w * vh / vw).coerceAtLeast(2)
                     var target = bmp
                     if (target == null || target.width != w || target.height != h) {
@@ -265,26 +296,34 @@ class HostServer(
                             baos.writeTo(out)
                             out.flush()
                         }
-                        val sendMs = SystemClock.elapsedRealtime() - tw
-
-                        // Желі баяу болса сапаны түсіреміз, жақсы болса көтереміз
-                        quality = when {
-                            sendMs > 40 -> (quality - 5).coerceAtLeast(Net.QUALITY_MIN)
-                            sendMs < 12 -> (quality + 2).coerceAtMost(Net.QUALITY_MAX)
-                            else -> quality
-                        }
+                        sendMs = SystemClock.elapsedRealtime() - tw
                     } else {
                         failures++
                         if (failures >= 30 && !reported) {
                             reported = true
-                            status("Захват видео не работает (код PixelCopy ${code.get()})")
+                            status(tr(
+                                "Video capture is not working (PixelCopy code ${code.get()})",
+                                "Захват видео не работает (код PixelCopy ${code.get()})",
+                                "Видео түсіру істемей тұр (PixelCopy коды ${code.get()})"
+                            ))
                         }
                     }
                 }
 
-                val spent = SystemClock.elapsedRealtime() - t0
-                val wait = Net.FRAME_INTERVAL_MS - spent
-                if (wait > 0) Thread.sleep(wait)
+                // Желі баяу болса: сапаны және кадр жиілігін түсіреміз, жақсы болса қайтарамыз
+                if (sendMs > 40) {
+                    quality = (quality - 5).coerceAtLeast(Net.QUALITY_MIN)
+                    interval = (interval + 10).coerceAtMost(150)
+                } else if (sendMs in 1..12) {
+                    quality = (quality + 2).coerceAtMost(minOf(Net.QUALITY_MAX, preset.quality + 10))
+                    interval = (interval - 5).coerceAtLeast(preset.intervalMs)
+                }
+
+                // Ровный ритм без «догоняющих» всплесков
+                nextAt += interval
+                val now = SystemClock.elapsedRealtime()
+                val wait = nextAt - now
+                if (wait > 0) Thread.sleep(wait) else nextAt = now
             }
         } catch (e: Exception) {
             alive.set(false)
@@ -292,7 +331,7 @@ class HostServer(
     }
 }
 
-/** Guest-тың Host іздеуі (UDP broadcast тыңдау). */
+/** Поиск хоста гостем (слушаем UDP broadcast). */
 class DiscoveryListener(
     private val activity: Activity,
     private val onFound: (ip: String, name: String) -> Unit
@@ -310,7 +349,7 @@ class DiscoveryListener(
                 acquire()
             }
         } catch (e: Exception) {
-            // lock алынбады, broadcast бәрібір жұмыс істеуі мүмкін
+            // lock не получен, broadcast всё равно может работать
         }
 
         Thread {
@@ -334,11 +373,11 @@ class DiscoveryListener(
                             activity.runOnUiThread { onFound(ip, name) }
                         }
                     } catch (e: SocketTimeoutException) {
-                        // күтеміз
+                        // ждём
                     }
                 }
             } catch (e: Exception) {
-                // тоқтатылды
+                // остановлено
             } finally {
                 try { socket?.close() } catch (e: Exception) { }
             }
@@ -356,7 +395,7 @@ class DiscoveryListener(
     }
 }
 
-/** Guest жағы. */
+/** Сторона гостя. */
 class GuestClient(
     private val host: String,
     private val activity: Activity,
@@ -373,18 +412,27 @@ class GuestClient(
     private var socket: Socket? = null
     private val sender = Executors.newSingleThreadExecutor()
 
+    // Всегда показываем самый свежий кадр: старые отбрасываем (иначе после лага видео «ускоряется»)
+    private val rawQueue = ArrayBlockingQueue<ByteArray>(1)
+    private val latest = AtomicReference<Bitmap?>(null)
+    private val uiPosted = AtomicBoolean(false)
+
     fun start() {
         running = true
         lastFrameAt = SystemClock.elapsedRealtime()
+        startDecoder()
 
         Thread {
             try {
                 val s = Socket()
                 s.tcpNoDelay = true
+                s.receiveBufferSize = Net.SOCKET_BUFFER
                 s.connect(InetSocketAddress(host, Net.PORT), 5000)
                 socket = s
                 out = DataOutputStream(s.getOutputStream().buffered())
-                activity.runOnUiThread { onStatus("Подключено к хосту") }
+                activity.runOnUiThread {
+                    onStatus(tr("Connected to the host", "Подключено к хосту", "Хостқа қосылды"))
+                }
 
                 startStatsLoop()
 
@@ -396,12 +444,8 @@ class GuestClient(
                             if (len <= 0 || len > 4_000_000) break
                             val buf = ByteArray(len)
                             input.readFully(buf)
-                            val bmp = BitmapFactory.decodeByteArray(buf, 0, len)
-                            if (bmp != null) {
-                                frames.incrementAndGet()
-                                lastFrameAt = SystemClock.elapsedRealtime()
-                                activity.runOnUiThread { onFrame(bmp) }
-                            }
+                            rawQueue.poll()      // старый необработанный кадр выбрасываем
+                            rawQueue.offer(buf)
                         }
                         Net.MSG_PONG -> {
                             val ts = input.readLong()
@@ -412,7 +456,13 @@ class GuestClient(
                 }
             } catch (e: Exception) {
                 if (running) {
-                    activity.runOnUiThread { onStatus("Нет связи: ${e.message}") }
+                    activity.runOnUiThread {
+                        onStatus(tr(
+                            "No connection: ${e.message}",
+                            "Нет связи: ${e.message}",
+                            "Байланыс жоқ: ${e.message}"
+                        ))
+                    }
                 }
             } finally {
                 val wasRunning = running
@@ -426,7 +476,35 @@ class GuestClient(
         }
     }
 
-    // Әр секунд сайын ping жібереді және статистика көрсетеді
+    // Декодирование в отдельном потоке: чтение из сети не блокируется
+    private fun startDecoder() {
+        Thread {
+            while (running) {
+                val data = try {
+                    rawQueue.poll(200, TimeUnit.MILLISECONDS)
+                } catch (e: InterruptedException) {
+                    null
+                } ?: continue
+
+                val bmp = BitmapFactory.decodeByteArray(data, 0, data.size) ?: continue
+                frames.incrementAndGet()
+                lastFrameAt = SystemClock.elapsedRealtime()
+
+                latest.set(bmp)
+                if (uiPosted.compareAndSet(false, true)) {
+                    activity.runOnUiThread {
+                        uiPosted.set(false)
+                        latest.getAndSet(null)?.let { onFrame(it) }
+                    }
+                }
+            }
+        }.also {
+            it.isDaemon = true
+            it.start()
+        }
+    }
+
+    // Каждую секунду шлёт ping и показывает статистику
     private fun startStatsLoop() {
         Thread {
             try {
@@ -442,7 +520,7 @@ class GuestClient(
                     activity.runOnUiThread { onStats(rtt, fps, noVideo) }
                 }
             } catch (e: Exception) {
-                // тоқтатылды
+                // остановлено
             }
         }.also {
             it.isDaemon = true
@@ -468,11 +546,11 @@ class GuestClient(
                         o.flush()
                     }
                 } catch (e: Exception) {
-                    // жіберілмеді
+                    // не отправлено
                 }
             }
         } catch (e: Exception) {
-            // stop() кейін
+            // после stop()
         }
     }
 
