@@ -11,7 +11,7 @@ android {
     compileSdk 35
 
     defaultConfig {
-        applicationId 'com.nurasql77.sorr'
+        applicationId 'kz.base64E.port'
         minSdk 24
         targetSdk 34
         // CI передаёт -PversionCode=N -PversionName=1.0.N
