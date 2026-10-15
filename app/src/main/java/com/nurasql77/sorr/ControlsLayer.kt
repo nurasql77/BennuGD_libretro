@@ -111,6 +111,8 @@ class ControlsLayer(
     // ---------- Құру ----------
 
     fun addTo(container: FrameLayout) {
+        // Несколько пальцев одновременно: каждый блок и каждая кнопка получают свои касания
+        container.isMotionEventSplittingEnabled = true
         val left = createPadGroup("left", tr("Left block: D-pad", "Левый блок: крестовина", "Сол жақ блок: бағыт түймелері"), 0.17f, 0.72f, 1f, buildLeftConfig())
         val right = createPadGroup("right", tr("Right block: A B X Y", "Правый блок: A B X Y", "Оң жақ блок: A B X Y"), 0.83f, 0.72f, 1f, buildRightConfig())
         val l1 = createGroup("l1", "L1", 0.12f, 0.15f, 0.2f, SingleButtonView(activity, "L1", KeyEvent.KEYCODE_BUTTON_L1, sink))
@@ -180,6 +182,8 @@ class ControlsLayer(
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
         )
+
+        holder.isMotionEventSplittingEnabled = true
 
         val g = Group(key, title, cx, cy, scale, holder)
         load(g)
@@ -519,6 +523,11 @@ class SingleButtonView(
     override fun onTouchEvent(event: MotionEvent): Boolean {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> setDown(true)
+            MotionEvent.ACTION_MOVE -> {
+                // Палец ушёл с кнопки: отпускаем, вернулся: нажимаем снова
+                val inside = event.x >= 0f && event.x <= width && event.y >= 0f && event.y <= height
+                setDown(inside)
+            }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> setDown(false)
         }
         return true
